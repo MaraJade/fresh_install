@@ -1,0 +1,141 @@
+#!/bin/bash
+
+scriptName="$(basename ${0})"
+USAGE="
+Usage: ${scriptName} [options] regexp
+    where options are:
+    -d directory   :  set the starting directory (defaults to current directory)
+    -e             :  edit the files where regexp is found
+    -E editor      :  set the editor and forces the -e option (defaults to vim)
+    -I             :  case sensitive search (by default the search is case insenstive)
+    -l             :  list files where regexp is found
+    -ls ls-options :  'ls ls-options' files where regexp is found (you MUST supply at least one option)
+"
+
+# Set defaults
+findGrepOptions="-E -l -i"
+grepOptions="-E -n -i"
+
+ignoreList="tbd templates_c da.blog"
+lookAtList="*.php *.inc *.conf *.tpl *.js *.css *.sql"
+
+saveResultsMinutes=10
+tmpDir="/tmp/dafind.${USER}"
+mkdir -p "${tmpDir}"
+if [ $? -ne 0 ]; then
+    echo "Could not use tmdDir [${tmpDir}]"
+    exit 1
+fi
+
+# Clean out old results
+find ${tmpDir} -type f -mmin +${saveResultsMinutes} -exec rm {} \;
+
+# Process options
+while [ "${1:0:1}" = "-" ]; do
+    case $1 in
+    -d ) # set the topDir
+        topDir=${2}
+        if [ ! -d "${topDir}" ]; then
+            echo -e "\nThe value you provided [${topDir}] is not a directory\n"
+            exit 2
+        fi
+        shift 2
+        ;;
+    -e ) # edit the files with vim if an editor hasn't already been provided
+        if [ -z "${editor}" ]; then
+            editor="vim"
+            lookAt=$(which ${editor} | tail -1) 2>/dev/null
+        fi
+        shift
+        ;;
+    -E ) # set the editor
+        editor="${2}"
+        lookAt=$(which ${editor} | tail -1) 2>/dev/null
+        shift 2
+        ;;
+    -I ) # force case sensitivity (remove "-i" from the findGrepOptions and grepOptions)
+        findGrepOptions=$(echo "${findGrepOptions}" | sed -e 's/ -i//g')
+        grepOptions=$(echo "${grepOptions}" | sed -e 's/ -i//g')
+        shift
+        ;;
+    -l ) # just list files
+        justls=true
+        lsOptions="-1"
+        shift
+        ;;
+    -ls ) # long list files
+        justls=true
+        lsOptions="${2}"
+        shift 2
+        ;;
+    * )
+        echo -e "\n${USAGE}\n"
+        exit 1
+        ;;
+    esac
+done
+
+# Ensure there is a regexp to look for after the options have been processed
+if [ -z "${1}" ]; then
+    echo -e "\n${USAGE}\n"
+    exit 1
+fi
+
+# If the topDir is not set, use the current directory
+topDir="${topDir:-$(pwd)}"
+
+# If editing was provided as an option, make sure the editor exists
+if [ -n "${editor}" -a -z "${lookAt}" ]; then
+    echo -e "\nThe desired editor [${editor}] is not found on this machine\n"
+    exit 1
+fi
+
+
+# The options have been processed and everything is good to go, so use the rest of the arguments the regexp string
+regexpString="${*}"
+alnumRegexp=$(echo "${regexpString}" | tr -cd '[:alnum:]]')
+resultsFile="${tmpDir}/${alnumRegexp}"
+
+# Print a message about what is happening
+message="Looking for [${regexpString}] in files starting in ${topDir}"
+line="$(echo ${message} | sed -e 's/./#/g')"
+echo -e "\n${line}\n${message}\n${line}"
+
+# Build the command
+ignorePhrase="$(echo "${ignoreList}" | sed -e 's/ /" -o -name "/g;s/^/\\\( -name "/g;s/$/" \\\) -prune/g')"
+lookAtPhrase="$(echo "${lookAtList}" | sed -e 's/ /" -o -name "/g;s/^/\\\( -name "/g;s/$/" \\\)/g')"
+command="find -L "${topDir}" "${ignorePhrase}" -o "${lookAtPhrase}" -type f -exec grep ${findGrepOptions} "${regexpString}" {} \; 2>/dev/null"
+# echo "${command}"
+
+# If we haven't recently run this search, find the files that contain the regexpString and save the list
+if [ $(find ${tmpDir} -name $(basename ${resultsFile}) -mmin -${saveResultsMinutes}) ]; then  
+    foundFiles="$(cat ${resultsFile})"
+else
+    foundFiles="$(eval "${command}")"
+    echo "${foundFiles}" > ${resultsFile}
+fi
+
+# If we are not listing and not editing the files, show what's found in each file
+if [ "${justls}" != "true" -a -z "${lookAt}" ]; then
+    for file in ${foundFiles}; do
+        fMessage="FILE: ${file}"
+        fLine="$(echo ${fMessage} | sed -e 's/./-/g')"
+        echo -e "\n\n\n${fLine}\n${fMessage}\n${fLine}\n"
+        grep ${grepOptions} "${regexpString}" "${file}"
+    done
+fi
+
+# If we want to edit the files
+if [ -n "${lookAt}" ]; then
+    if [ "${editor}" = "vim" -o  "${editor}" = "vi" ]; then
+        ${lookAt} +/"${regexpString}"/ ${foundFiles}
+    else
+        ${lookAt} ${foundFiles}
+    fi
+fi
+
+# If we want a list of the files as well
+if [ "${justls}" = "true" ]; then
+    ls ${lsOptions} ${foundFiles}
+fi
+
